@@ -35,6 +35,6 @@ jobs:
           MAX_TRADE_SIZE_USD: "100"
           MAX_TRADES_PER_DAY: "20"
           SYMBOL: BTCUSD
-          TIMEFRAME: 4H
+          TIMEFRAME: 15m
           PAPER_TRADING: "false"
         run: node bot.js
