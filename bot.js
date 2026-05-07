@@ -11,13 +11,11 @@
 
 import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
-import crypto from "crypto";
-import { execSync } from "child_process";
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────
 
 function checkOnboarding() {
-  const required = ["BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE"];
+  const required = ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL"];
   const missing = required.filter((k) => !process.env[k]);
 
   if (!existsSync(".env")) {
@@ -27,35 +25,28 @@ function checkOnboarding() {
     writeFileSync(
       ".env",
       [
-        "# BitGet credentials",
-        "BITGET_API_KEY=",
-        "BITGET_SECRET_KEY=",
-        "BITGET_PASSPHRASE=",
+        "# Alpaca credentials",
+        "ALPACA_API_KEY=",
+        "ALPACA_SECRET_KEY=",
+        "ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2",
         "",
         "# Trading config",
         "PORTFOLIO_VALUE_USD=1000",
         "MAX_TRADE_SIZE_USD=100",
-        "MAX_TRADES_PER_DAY=3",
+        "MAX_TRADES_PER_DAY=20",
         "PAPER_TRADING=true",
-        "SYMBOL=BTCUSDT",
+        "SYMBOL=BTCUSD",
         "TIMEFRAME=4H",
       ].join("\n") + "\n",
     );
-    try {
-      execSync("open .env");
-    } catch {}
     console.log(
-      "Fill in your BitGet credentials in .env then re-run: node bot.js\n",
+      "Fill in your Alpaca credentials in .env then re-run: node bot.js\n",
     );
     process.exit(0);
   }
 
   if (missing.length > 0) {
     console.log(`\n⚠️  Missing credentials in .env: ${missing.join(", ")}`);
-    console.log("Opening .env for you now...\n");
-    try {
-      execSync("open .env");
-    } catch {}
     console.log("Add the missing values then re-run: node bot.js\n");
     process.exit(0);
   }
@@ -72,18 +63,17 @@ function checkOnboarding() {
 // ─── Config ────────────────────────────────────────────────────────────────
 
 const CONFIG = {
-  symbol: process.env.SYMBOL || "BTCUSDT",
+  symbol: process.env.SYMBOL || "BTCUSD",
   timeframe: process.env.TIMEFRAME || "4H",
   portfolioValue: parseFloat(process.env.PORTFOLIO_VALUE_USD || "1000"),
   maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD || "100"),
-  maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "3"),
+  maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "20"),
   paperTrading: process.env.PAPER_TRADING !== "false",
   tradeMode: process.env.TRADE_MODE || "spot",
-  bitget: {
-    apiKey: process.env.BITGET_API_KEY,
-    secretKey: process.env.BITGET_SECRET_KEY,
-    passphrase: process.env.BITGET_PASSPHRASE,
-    baseUrl: process.env.BITGET_BASE_URL || "https://api.bitget.com",
+  alpaca: {
+    apiKey: process.env.ALPACA_API_KEY,
+    secretKey: process.env.ALPACA_SECRET_KEY,
+    baseUrl: process.env.ALPACA_BASE_URL || "https://paper-api.alpaca.markets/v2",
   },
 };
 
@@ -107,35 +97,43 @@ function countTodaysTrades(log) {
   ).length;
 }
 
-// ─── Market Data (Binance public API — free, no auth) ───────────────────────
+// ─── Market Data (Kraken public API — free, no auth, works globally) ─────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
-  // Map our timeframe format to Binance interval format
+  // Map our timeframe format to Kraken interval in minutes
   const intervalMap = {
-    "1m": "1m",
-    "3m": "3m",
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1H": "1h",
-    "4H": "4h",
-    "1D": "1d",
-    "1W": "1w",
+    "1m": 1,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1H": 60,
+    "4H": 240,
+    "1D": 1440,
+    "1W": 10080,
   };
-  const binanceInterval = intervalMap[interval] || "1m";
+  const krakenInterval = intervalMap[interval] || 60;
 
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${binanceInterval}&limit=${limit}`;
+  // Kraken uses XBTUSD for BTC/USD
+  const krakenPair = symbol.replace("BTCUSD", "XBTUSD");
+
+  const url = `https://api.kraken.com/0/public/OHLC?pair=${krakenPair}&interval=${krakenInterval}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
+  if (!res.ok) throw new Error(`Kraken API error: ${res.status}`);
   const data = await res.json();
+  if (data.error?.length) throw new Error(`Kraken error: ${data.error[0]}`);
 
-  return data.map((k) => ({
-    time: k[0],
+  // Kraken returns { result: { XXBTZUSD: [...bars], last: N } }
+  const pairKey = Object.keys(data.result).find((k) => k !== "last");
+  const bars = data.result[pairKey] || [];
+
+  // Kraken returns: [time, open, high, low, close, vwap, volume, count]
+  return bars.slice(-limit).map((k) => ({
+    time: k[0] * 1000,
     open: parseFloat(k[1]),
     high: parseFloat(k[2]),
     low: parseFloat(k[3]),
     close: parseFloat(k[4]),
-    volume: parseFloat(k[5]),
+    volume: parseFloat(k[6]),
   }));
 }
 
@@ -315,56 +313,35 @@ function checkTradeLimits(log) {
   return true;
 }
 
-// ─── BitGet Execution ────────────────────────────────────────────────────────
+// ─── Alpaca Execution ────────────────────────────────────────────────────────
 
-function signBitGet(timestamp, method, path, body = "") {
-  const message = `${timestamp}${method}${path}${body}`;
-  return crypto
-    .createHmac("sha256", CONFIG.bitget.secretKey)
-    .update(message)
-    .digest("base64");
-}
-
-async function placeBitGetOrder(symbol, side, sizeUSD, price) {
+async function placeAlpacaOrder(symbol, side, sizeUSD, price) {
   const quantity = (sizeUSD / price).toFixed(6);
-  const timestamp = Date.now().toString();
-  const path =
-    CONFIG.tradeMode === "spot"
-      ? "/api/v2/spot/trade/placeOrder"
-      : "/api/v2/mix/order/placeOrder";
 
   const body = JSON.stringify({
     symbol,
-    side,
-    orderType: "market",
-    quantity,
-    ...(CONFIG.tradeMode === "futures" && {
-      productType: "USDT-FUTURES",
-      marginMode: "isolated",
-      marginCoin: "USDT",
-    }),
+    qty: quantity,
+    side,          // "buy" or "sell"
+    type: "market",
+    time_in_force: "gtc",
   });
 
-  const signature = signBitGet(timestamp, "POST", path, body);
-
-  const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+  const res = await fetch(`${CONFIG.alpaca.baseUrl}/orders`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "ACCESS-KEY": CONFIG.bitget.apiKey,
-      "ACCESS-SIGN": signature,
-      "ACCESS-TIMESTAMP": timestamp,
-      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+      "APCA-API-KEY-ID": CONFIG.alpaca.apiKey,
+      "APCA-API-SECRET-KEY": CONFIG.alpaca.secretKey,
     },
     body,
   });
 
   const data = await res.json();
-  if (data.code !== "00000") {
-    throw new Error(`BitGet order failed: ${data.msg}`);
+  if (!res.ok) {
+    throw new Error(`Alpaca order failed: ${data.message || JSON.stringify(data)}`);
   }
 
-  return data.data;
+  return data;
 }
 
 // ─── Tax CSV Logging ─────────────────────────────────────────────────────────
@@ -442,7 +419,7 @@ function writeTradeCsv(logEntry) {
   const row = [
     date,
     time,
-    "BitGet",
+    "Alpaca",
     logEntry.symbol,
     side,
     quantity,
@@ -518,8 +495,9 @@ async function run() {
   }
 
   // Fetch candle data — need enough for EMA(8) + full session for VWAP
-  console.log("\n── Fetching market data from Binance ───────────────────\n");
+  console.log("\n── Fetching market data from Alpaca ────────────────────\n");
   const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
+  console.log(`  Bars received: ${candles.length}`);
   const closes = candles.map((c) => c.close);
   const price = closes[closes.length - 1];
   console.log(`  Current price: $${price.toFixed(2)}`);
@@ -533,13 +511,15 @@ async function run() {
   console.log(`  VWAP:    $${vwap ? vwap.toFixed(2) : "N/A"}`);
   console.log(`  RSI(3):  ${rsi3 ? rsi3.toFixed(2) : "N/A"}`);
 
-  if (!vwap || !rsi3) {
-    console.log("\n⚠️  Not enough data to calculate indicators. Exiting.");
+  if (!vwap) {
+    console.log("\n⚠️  Not enough data to calculate VWAP. Exiting.");
     return;
   }
+  // RSI requires at least period+1 bars — use price as fallback if insufficient data
+  const rsi3Safe = rsi3 ?? 50;
 
   // Run safety check
-  const { results, allPass } = runSafetyCheck(price, ema8, vwap, rsi3, rules);
+  const { results, allPass } = runSafetyCheck(price, ema8, vwap, rsi3Safe, rules);
 
   // Calculate position size
   const tradeSize = Math.min(
@@ -589,15 +569,15 @@ async function run() {
         `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} BUY ${CONFIG.symbol}`,
       );
       try {
-        const order = await placeBitGetOrder(
+        const order = await placeAlpacaOrder(
           CONFIG.symbol,
           "buy",
           tradeSize,
           price,
         );
         logEntry.orderPlaced = true;
-        logEntry.orderId = order.orderId;
-        console.log(`✅ ORDER PLACED — ${order.orderId}`);
+        logEntry.orderId = order.id;
+        console.log(`✅ ORDER PLACED — ${order.id}`);
       } catch (err) {
         console.log(`❌ ORDER FAILED — ${err.message}`);
         logEntry.error = err.message;
