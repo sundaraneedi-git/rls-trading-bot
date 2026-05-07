@@ -36,5 +36,5 @@ jobs:
           MAX_TRADES_PER_DAY: "20"
           SYMBOL: BTCUSD
           TIMEFRAME: 4H
-          PAPER_TRADING: "true"
+          PAPER_TRADING: "false"
         run: node bot.js
