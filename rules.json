@@ -1,50 +1,42 @@
 {
-  "watchlist": ["BTCUSDT"],
-  "default_timeframe": "1m",
+  "watchlist": ["BTCUSD"],
+  "default_timeframe": "4H",
 
   "strategy": {
-    "name": "VWAP + RSI(3) + EMA(8) Scalping Strategy",
-    "sources": ["Lewis Jackson"],
-    "description": "Three indicators, each doing a different job. EMA(8) for trend direction, VWAP for session bias, RSI(3) for entry timing. All three must align before a trade fires."
+    "name": "RLS Private Indicator Strategy",
+    "sources": ["User's private TradingView indicator — RLS"],
+    "description": "Signal-based strategy driven entirely by the RLS private TradingView indicator. RLS Buy fires a long entry; RLS Sell fires a short entry. The next opposing RLS signal closes the current position. Hard stop loss at 25% from entry."
   },
 
   "indicators": {
-    "ema_8": "Trend direction. Price above EMA(8) = bullish momentum. Below = bearish.",
-    "vwap": "Session bias. Price above VWAP = buyers in control. Below = sellers. Resets at midnight UTC.",
-    "rsi_3": "Entry timing. RSI on 3 candles only — extremely sensitive. Below 30 in an uptrend = snap-back setup. Above 70 in a downtrend = reversal likely."
-  },
-
-  "bias_criteria": {
-    "bullish": ["Price is above VWAP", "Price is above EMA(8)"],
-    "bearish": ["Price is below VWAP", "Price is below EMA(8)"]
+    "rls": "Private TradingView indicator. Emits two signals: 'RLS Buy' (bullish, enter long) and 'RLS Sell' (bearish, enter short). No other indicators required — RLS signal is the single source of truth."
   },
 
   "entry_rules": {
     "long": [
-      "Price is above VWAP — buyers in control for the session",
-      "Price is above EMA(8) — uptrend confirmed",
-      "RSI(3) has dropped below 30 — short-term pullback in an uptrend, snap-back likely"
+      "RLS indicator has fired an 'RLS Buy' signal on the current bar",
+      "No existing long position is open"
     ],
     "short": [
-      "Price is below VWAP — sellers in control",
-      "Price is below EMA(8) — downtrend confirmed",
-      "RSI(3) has spiked above 70 — overbought in a downtrend, reversal likely"
+      "RLS indicator has fired an 'RLS Sell' signal on the current bar",
+      "No existing short position is open"
     ]
   },
 
   "exit_rules": [
-    "Exit when RSI(3) crosses back above 50 (for longs) or below 50 (for shorts)",
-    "Hard stop: 0.3% below entry for longs, 0.3% above entry for shorts",
-    "Take profit at next VWAP touch or EMA(8) cross"
+    "Close long position when RLS fires an 'RLS Sell' signal",
+    "Close short position when RLS fires an 'RLS Buy' signal",
+    "Hard stop loss: exit immediately if trade moves 25% against entry price",
+    "Do not exit on any other condition — only RLS signal flip or stop loss"
   ],
 
   "risk_rules": [
-    "Risk maximum 1% of portfolio per trade",
+    "Hard stop loss is 25% from entry — non-negotiable, always set at order time",
     "Maximum trade size capped by MAX_TRADE_SIZE_USD in .env",
     "Maximum trades per day capped by MAX_TRADES_PER_DAY in .env",
-    "Do not trade if price is more than 1.5% away from VWAP — overextended",
-    "Paper trade first — validate this strategy on your specific asset before going live"
+    "Paper trade first — validate RLS signals on your specific asset before going live",
+    "RLS is a private indicator — confirm it is active and publishing signals on your TradingView chart before each run"
   ],
 
-  "notes": "Scalping strategy — designed for 1m to 5m timeframes. RSI(3) is intentionally fast and sensitive. Do not apply to higher timeframes."
+  "notes": "This strategy is entirely signal-driven. The bot does not evaluate price, volume, or any other indicator — it only acts on RLS Buy and RLS Sell alerts from TradingView. Ensure TradingView alerts are configured to fire on every RLS signal and are connected via the MCP."
 }

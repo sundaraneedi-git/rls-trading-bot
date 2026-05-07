@@ -1,0 +1,40 @@
+name: RLS Trading Bot
+
+on:
+  schedule:
+    # Runs every hour at the top of the hour (UTC)
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run trading bot
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          EXCHANGE: alpaca
+          TRADE_MODE: spot
+          PORTFOLIO_VALUE_USD: "1000"
+          MAX_TRADE_SIZE_USD: "100"
+          MAX_TRADES_PER_DAY: "20"
+          SYMBOL: BTCUSD
+          TIMEFRAME: 4H
+          PAPER_TRADING: "true"
+        run: node bot.js
