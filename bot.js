@@ -178,102 +178,33 @@ function calcVWAP(candles) {
   return cumVol === 0 ? null : cumTPV / cumVol;
 }
 
-// ─── Safety Check ───────────────────────────────────────────────────────────
+// ─── RLS Signal Check ────────────────────────────────────────────────────────
 
-function runSafetyCheck(price, ema8, vwap, rsi3, rules) {
+function runSafetyCheck(price, ema8, vwap, rsi3Safe, rules) {
   const results = [];
+  const signal = (process.env.RLS_SIGNAL || "none").toLowerCase();
 
-  const check = (label, required, actual, pass) => {
-    results.push({ label, required, actual, pass });
-    const icon = pass ? "✅" : "🚫";
-    console.log(`  ${icon} ${label}`);
-    console.log(`     Required: ${required} | Actual: ${actual}`);
-  };
+  console.log("\n── RLS Signal Check ─────────────────────────────────────\n");
+  console.log(`  Signal received: ${signal.toUpperCase()}`);
 
-  console.log("\n── Safety Check ─────────────────────────────────────────\n");
-
-  // Determine bias first
-  const bullishBias = price > vwap && price > ema8;
-  const bearishBias = price < vwap && price < ema8;
-
-  if (bullishBias) {
-    console.log("  Bias: BULLISH — checking long entry conditions\n");
-
-    // 1. Price above VWAP
-    check(
-      "Price above VWAP (buyers in control)",
-      `> ${vwap.toFixed(2)}`,
-      price.toFixed(2),
-      price > vwap,
-    );
-
-    // 2. Price above EMA(8)
-    check(
-      "Price above EMA(8) (uptrend confirmed)",
-      `> ${ema8.toFixed(2)}`,
-      price.toFixed(2),
-      price > ema8,
-    );
-
-    // 3. RSI(3) pullback
-    check(
-      "RSI(3) below 30 (snap-back setup in uptrend)",
-      "< 30",
-      rsi3.toFixed(2),
-      rsi3 < 30,
-    );
-
-    // 4. Not overextended from VWAP
-    const distFromVWAP = Math.abs((price - vwap) / vwap) * 100;
-    check(
-      "Price within 1.5% of VWAP (not overextended)",
-      "< 1.5%",
-      `${distFromVWAP.toFixed(2)}%`,
-      distFromVWAP < 1.5,
-    );
-  } else if (bearishBias) {
-    console.log("  Bias: BEARISH — checking short entry conditions\n");
-
-    check(
-      "Price below VWAP (sellers in control)",
-      `< ${vwap.toFixed(2)}`,
-      price.toFixed(2),
-      price < vwap,
-    );
-
-    check(
-      "Price below EMA(8) (downtrend confirmed)",
-      `< ${ema8.toFixed(2)}`,
-      price.toFixed(2),
-      price < ema8,
-    );
-
-    check(
-      "RSI(3) above 70 (reversal setup in downtrend)",
-      "> 70",
-      rsi3.toFixed(2),
-      rsi3 > 70,
-    );
-
-    const distFromVWAP = Math.abs((price - vwap) / vwap) * 100;
-    check(
-      "Price within 1.5% of VWAP (not overextended)",
-      "< 1.5%",
-      `${distFromVWAP.toFixed(2)}%`,
-      distFromVWAP < 1.5,
-    );
+  if (signal === "buy") {
+    console.log("  RLS Buy signal detected — checking long entry\n");
+    results.push({ label: "RLS Buy signal", required: "buy", actual: signal, pass: true });
+    console.log(`  ✅ RLS Buy signal confirmed`);
+    console.log(`     Current price: $${price.toFixed(2)}`);
+  } else if (signal === "sell") {
+    console.log("  RLS Sell signal detected — checking short entry\n");
+    results.push({ label: "RLS Sell signal", required: "sell", actual: signal, pass: true });
+    console.log(`  ✅ RLS Sell signal confirmed`);
+    console.log(`     Current price: $${price.toFixed(2)}`);
   } else {
-    console.log("  Bias: NEUTRAL — no clear direction. No trade.\n");
-    results.push({
-      label: "Market bias",
-      required: "Bullish or bearish",
-      actual: "Neutral",
-      pass: false,
-    });
+    console.log("  No RLS signal — no trade.\n");
+    results.push({ label: "RLS signal", required: "buy or sell", actual: "none", pass: false });
+    console.log(`  🚫 No active RLS signal`);
   }
 
   const allPass = results.every((r) => r.pass);
-  return { results, allPass };
+  return { results, allPass, signal };
 }
 
 // ─── Trade Limits ────────────────────────────────────────────────────────────
@@ -555,23 +486,24 @@ async function run() {
     console.log(`   Failed conditions:`);
     failed.forEach((f) => console.log(`   - ${f}`));
   } else {
-    console.log(`✅ ALL CONDITIONS MET`);
+    const orderSide = signal === "sell" ? "sell" : "buy";
+    console.log(`✅ RLS SIGNAL CONFIRMED — ${orderSide.toUpperCase()}`);
 
     if (CONFIG.paperTrading) {
       console.log(
-        `\n📋 PAPER TRADE — would buy ${CONFIG.symbol} ~$${tradeSize.toFixed(2)} at market`,
+        `\n📋 PAPER TRADE — would ${orderSide} ${CONFIG.symbol} ~$${tradeSize.toFixed(2)} at market`,
       );
       console.log(`   (Set PAPER_TRADING=false in .env to place real orders)`);
       logEntry.orderPlaced = true;
       logEntry.orderId = `PAPER-${Date.now()}`;
     } else {
       console.log(
-        `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} BUY ${CONFIG.symbol}`,
+        `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} ${orderSide.toUpperCase()} ${CONFIG.symbol}`,
       );
       try {
         const order = await placeAlpacaOrder(
           CONFIG.symbol,
-          "buy",
+          orderSide,
           tradeSize,
           price,
         );

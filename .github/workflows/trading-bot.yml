@@ -2,10 +2,18 @@ name: RLS Trading Bot
 
 on:
   schedule:
-    # Runs every hour at the top of the hour (UTC)
+    # Runs every hour — monitors conditions
     - cron: '0 * * * *'
   workflow_dispatch:
-    # Allows manual trigger from GitHub Actions tab
+    # Manual trigger with signal input
+    inputs:
+      rls_signal:
+        description: 'RLS Signal (buy / sell / none)'
+        required: false
+        default: 'none'
+  repository_dispatch:
+    # Triggered by TradingView webhook
+    types: [rls-buy, rls-sell]
 
 jobs:
   run-bot:
@@ -24,6 +32,24 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Determine RLS signal
+        id: signal
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            EVENT="${{ github.event.action }}"
+            if [ "$EVENT" = "rls-buy" ]; then
+              echo "rls_signal=buy" >> $GITHUB_OUTPUT
+            elif [ "$EVENT" = "rls-sell" ]; then
+              echo "rls_signal=sell" >> $GITHUB_OUTPUT
+            else
+              echo "rls_signal=none" >> $GITHUB_OUTPUT
+            fi
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "rls_signal=${{ github.event.inputs.rls_signal }}" >> $GITHUB_OUTPUT
+          else
+            echo "rls_signal=none" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run trading bot
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
@@ -37,4 +63,5 @@ jobs:
           SYMBOL: BTCUSD
           TIMEFRAME: 15m
           PAPER_TRADING: "false"
+          RLS_SIGNAL: ${{ steps.signal.outputs.rls_signal }}
         run: node bot.js
