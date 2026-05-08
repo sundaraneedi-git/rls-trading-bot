@@ -249,15 +249,21 @@ function checkTradeLimits(log) {
 async function placeAlpacaOrder(symbol, side, sizeUSD, price) {
   const quantity = (sizeUSD / price).toFixed(6);
 
+  // Alpaca crypto requires "BTC/USD" format, not "BTCUSD"
+  const alpacaSymbol = symbol.replace(/^BTC(USD)$/, "BTC/$1");
+
+  // Ensure base URL includes /v2
+  const baseUrl = CONFIG.alpaca.baseUrl.replace(/\/v2$/, "") + "/v2";
+
   const body = JSON.stringify({
-    symbol,
+    symbol: alpacaSymbol,
     qty: quantity,
     side,          // "buy" or "sell"
     type: "market",
     time_in_force: "gtc",
   });
 
-  const res = await fetch(`${CONFIG.alpaca.baseUrl}/orders`, {
+  const res = await fetch(`${baseUrl}/orders`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
