@@ -246,24 +246,55 @@ function checkTradeLimits(log) {
 
 // ─── Alpaca Execution ────────────────────────────────────────────────────────
 
+// Ensure base URL always includes /v2
+function alpacaBaseUrl() {
+  return CONFIG.alpaca.baseUrl.replace(/\/v2$/, "") + "/v2";
+}
+
+// Alpaca crypto requires "BTC/USD" format, not "BTCUSD"
+function alpacaSymbol(symbol) {
+  return symbol.replace(/^BTC(USD)$/, "BTC/$1");
+}
+
+async function getAlpacaPosition(symbol) {
+  const encodedSymbol = encodeURIComponent(alpacaSymbol(symbol));
+  const res = await fetch(`${alpacaBaseUrl()}/positions/${encodedSymbol}`, {
+    headers: {
+      "APCA-API-KEY-ID": CONFIG.alpaca.apiKey,
+      "APCA-API-SECRET-KEY": CONFIG.alpaca.secretKey,
+    },
+  });
+  if (res.status === 404) return null; // No position open
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Alpaca position fetch failed: ${data.message}`);
+  return data; // { qty, market_value, avg_entry_price, ... }
+}
+
 async function placeAlpacaOrder(symbol, side, sizeUSD, price) {
-  const quantity = (sizeUSD / price).toFixed(6);
+  let quantity;
 
-  // Alpaca crypto requires "BTC/USD" format, not "BTCUSD"
-  const alpacaSymbol = symbol.replace(/^BTC(USD)$/, "BTC/$1");
-
-  // Ensure base URL includes /v2
-  const baseUrl = CONFIG.alpaca.baseUrl.replace(/\/v2$/, "") + "/v2";
+  if (side === "sell") {
+    // Sell the ENTIRE position — fetch actual qty held
+    const position = await getAlpacaPosition(symbol);
+    if (!position || parseFloat(position.qty) <= 0) {
+      throw new Error("No open position to sell");
+    }
+    quantity = position.qty; // Use exact qty from Alpaca
+    console.log(`  Selling full position: ${quantity} ${alpacaSymbol(symbol)}`);
+  } else {
+    // Buy a fixed USD amount
+    quantity = (sizeUSD / price).toFixed(6);
+  }
 
   const body = JSON.stringify({
-    symbol: alpacaSymbol,
+    symbol: alpacaSymbol(symbol),
     qty: quantity,
-    side,          // "buy" or "sell"
+    side,
     type: "market",
     time_in_force: "gtc",
   });
 
-  const res = await fetch(`${baseUrl}/orders`, {
+  const res = await fetch(`${alpacaBaseUrl()}/orders`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -334,20 +365,20 @@ function writeTradeCsv(logEntry) {
     orderId = "BLOCKED";
     notes = `Failed: ${failed}`;
   } else if (logEntry.paperTrading) {
-    side = "BUY";
-    quantity = (logEntry.tradeSize / logEntry.price).toFixed(6);
-    totalUSD = logEntry.tradeSize.toFixed(2);
-    fee = (logEntry.tradeSize * 0.001).toFixed(4);
-    netAmount = (logEntry.tradeSize - parseFloat(fee)).toFixed(2);
+    side = logEntry.signal === "sell" ? "SELL" : "BUY";
+    quantity = logEntry.fillQty || (logEntry.tradeSize / logEntry.price).toFixed(6);
+    totalUSD = (parseFloat(quantity) * logEntry.price).toFixed(2);
+    fee = (parseFloat(totalUSD) * 0.001).toFixed(4);
+    netAmount = (parseFloat(totalUSD) - parseFloat(fee)).toFixed(2);
     orderId = logEntry.orderId || "";
     mode = "PAPER";
     notes = "All conditions met";
   } else {
-    side = "BUY";
-    quantity = (logEntry.tradeSize / logEntry.price).toFixed(6);
-    totalUSD = logEntry.tradeSize.toFixed(2);
-    fee = (logEntry.tradeSize * 0.001).toFixed(4);
-    netAmount = (logEntry.tradeSize - parseFloat(fee)).toFixed(2);
+    side = logEntry.signal === "sell" ? "SELL" : "BUY";
+    quantity = logEntry.fillQty || (logEntry.tradeSize / logEntry.price).toFixed(6);
+    totalUSD = (parseFloat(quantity) * logEntry.price).toFixed(2);
+    fee = (parseFloat(totalUSD) * 0.001).toFixed(4);
+    netAmount = (parseFloat(totalUSD) - parseFloat(fee)).toFixed(2);
     orderId = logEntry.orderId || "";
     mode = "LIVE";
     notes = logEntry.error ? `Error: ${logEntry.error}` : "All conditions met";
@@ -456,9 +487,9 @@ async function run() {
   const rsi3Safe = rsi3 ?? 50;
 
   // Run safety check
-  const { results, allPass } = runSafetyCheck(price, ema8, vwap, rsi3Safe, rules);
+  const { results, allPass, signal } = runSafetyCheck(price, ema8, vwap, rsi3Safe, rules);
 
-  // Calculate position size
+  // Calculate position size (used for buys; sells use actual position qty)
   const tradeSize = Math.min(
     CONFIG.portfolioValue * 0.01,
     CONFIG.maxTradeSizeUSD,
@@ -472,10 +503,12 @@ async function run() {
     symbol: CONFIG.symbol,
     timeframe: CONFIG.timeframe,
     price,
+    signal,
     indicators: { ema8, vwap, rsi3 },
     conditions: results,
     allPass,
     tradeSize,
+    fillQty: null,
     orderPlaced: false,
     orderId: null,
     paperTrading: CONFIG.paperTrading,
@@ -496,16 +529,17 @@ async function run() {
     console.log(`✅ RLS SIGNAL CONFIRMED — ${orderSide.toUpperCase()}`);
 
     if (CONFIG.paperTrading) {
-      console.log(
-        `\n📋 PAPER TRADE — would ${orderSide} ${CONFIG.symbol} ~$${tradeSize.toFixed(2)} at market`,
-      );
+      const paperQty = orderSide === "sell" ? "full position" : `~$${tradeSize.toFixed(2)}`;
+      console.log(`\n📋 PAPER TRADE — would ${orderSide} ${CONFIG.symbol} ${paperQty} at market`);
       console.log(`   (Set PAPER_TRADING=false in .env to place real orders)`);
       logEntry.orderPlaced = true;
       logEntry.orderId = `PAPER-${Date.now()}`;
+      logEntry.fillQty = (tradeSize / price).toFixed(6);
     } else {
-      console.log(
-        `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} ${orderSide.toUpperCase()} ${CONFIG.symbol}`,
-      );
+      const label = orderSide === "sell"
+        ? `SELL ENTIRE POSITION ${CONFIG.symbol}`
+        : `BUY $${tradeSize.toFixed(2)} ${CONFIG.symbol}`;
+      console.log(`\n🔴 PLACING LIVE ORDER — ${label}`);
       try {
         const order = await placeAlpacaOrder(
           CONFIG.symbol,
@@ -515,7 +549,8 @@ async function run() {
         );
         logEntry.orderPlaced = true;
         logEntry.orderId = order.id;
-        console.log(`✅ ORDER PLACED — ${order.id}`);
+        logEntry.fillQty = order.qty;
+        console.log(`✅ ORDER PLACED — ${order.id} | qty: ${order.qty}`);
       } catch (err) {
         console.log(`❌ ORDER FAILED — ${err.message}`);
         logEntry.error = err.message;
