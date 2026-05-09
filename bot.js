@@ -490,8 +490,9 @@ async function run() {
   const { results, allPass, signal } = runSafetyCheck(price, ema8, vwap, rsi3Safe, rules);
 
   // Calculate position size (used for buys; sells use actual position qty)
+  // 10% of portfolio value, capped at MAX_TRADE_SIZE_USD ($100)
   const tradeSize = Math.min(
-    CONFIG.portfolioValue * 0.01,
+    CONFIG.portfolioValue * 0.10,
     CONFIG.maxTradeSizeUSD,
   );
 
