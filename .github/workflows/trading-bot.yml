@@ -1,19 +1,18 @@
 name: RLS Trading Bot
 
 on:
-  schedule:
-    # Runs every hour — monitors conditions
-    - cron: '0 * * * *'
+  # STRATEGY DISABLED — re-enable by uncommenting the triggers below
   workflow_dispatch:
-    # Manual trigger with signal input
+    # Manual trigger only (for testing)
     inputs:
       rls_signal:
         description: 'RLS Signal (buy / sell / none)'
         required: false
         default: 'none'
-  repository_dispatch:
-    # Triggered by TradingView webhook
-    types: [rls-buy, rls-sell]
+  # schedule:
+  #   - cron: '0 * * * *'
+  # repository_dispatch:
+  #   types: [rls-buy, rls-sell]
 
 jobs:
   run-bot:
